@@ -2,13 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Viewer with Reticle + Gestures</title>
+  <title>AR Viewer with Gestures</title>
   <script type="importmap">
     {
       "imports": {
         "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
         "three/examples/jsm/loaders/GLTFLoader": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/loaders/GLTFLoader.js",
-        "three/examples/jsm/loaders/FBXLoader": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/loaders/FBXLoader.js",
         "three/examples/jsm/controls/OrbitControls": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js",
         "three/examples/jsm/webxr/ARButton": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/webxr/ARButton.js"
       }
@@ -18,264 +17,194 @@
     body { margin: 0; overflow: hidden; font-family: sans-serif; }
     #modelInput { position: absolute; top: 10px; left: 10px; z-index: 10; }
     #infoPanel {
-      position: absolute; top: 0; right: 0;
-      width: 300px; height: 100%; overflow-y: auto;
-      background: #111; color: #eee; padding: 15px;
-      box-sizing: border-box; font-size: 14px;
+      position: absolute; top: 0; right: 0; width: 300px; height: 100%;
+      overflow-y: auto; background: #111; color: #eee; padding: 15px;
+      font-size: 14px; box-sizing: border-box;
     }
-    #meshButtons button {
-      display: block; width: 100%; margin-bottom: 5px;
-      background: #333; color: #fff; border: none; padding: 5px;
-      cursor: pointer;
-    }
+    #meshButtons button { width: 100%; margin-bottom: 5px; background: #333; color: #fff; border: none; padding: 5px; cursor: pointer; }
     #meshButtons button:hover { background: #555; }
     pre { white-space: pre-wrap; word-break: break-word; }
   </style>
 </head>
 <body>
-  <input type="file" id="modelInput" accept=".glb,.gltf,.fbx" />
+  <input type="file" id="modelInput" accept=".glb,.gltf" />
   <div id="infoPanel">
-    <h3>Animations</h3>
-    <div id="meshButtons">Load a model to see animations...</div>
-    <h3>All Animation Names</h3>
-    <pre id="animations"></pre>
-    <h3>Audios</h3>
-    <pre id="audios"></pre>
-    <h3>Selected Mesh</h3>
-    <div id="selectedMesh">None</div>
+    <h3>Animations</h3><div id="meshButtons">Load a model to see animations...</div>
+    <h3>All Animation Names</h3><pre id="animations"></pre>
+    <h3>Selected Mesh</h3><div id="selectedMesh">None</div>
   </div>
   <script type="module">
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
-    import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
     import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
     import { ARButton } from 'three/examples/jsm/webxr/ARButton';
 
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.01, 100);
-    camera.position.set(2, 2, 4);
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const scene = new THREE.Scene(),
+          camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.01, 100),
+          renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }),
+          loader = new GLTFLoader();
+    camera.position.set(2,2,4);
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.xr.enabled = true;
-    document.body.appendChild(renderer.domElement);
-
-    document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
+    document.body.append(renderer.domElement);
+    document.body.append(ARButton.createButton(renderer,{requiredFeatures:['hit-test']}));
 
     const controls = new OrbitControls(camera, renderer.domElement);
-    renderer.xr.addEventListener('sessionstart', () => controls.enabled = false);
-    renderer.xr.addEventListener('sessionend', () => controls.enabled = true);
+    renderer.xr.addEventListener('sessionstart', ()=>controls.enabled = false);
+    renderer.xr.addEventListener('sessionend', ()=>controls.enabled = true);
+    scene.add(new THREE.AmbientLight(0xffffff,1));
 
-    const listener = new THREE.AudioListener();
-    camera.add(listener);
-    scene.add(new THREE.AmbientLight(0xffffff, 1));
-
-    const gltfLoader = new GLTFLoader();
-    const fbxLoader = new FBXLoader();
-
-    const input = document.getElementById('modelInput');
-    const meshButtons = document.getElementById('meshButtons');
-    const animationsPanel = document.getElementById('animations');
-    const audiosPanel = document.getElementById('audios');
-    const selectedMeshPanel = document.getElementById('selectedMesh');
-
-    let mixer = null;
-    const clock = new THREE.Clock();
-    let meshList = [], audioList = [], animationList = [];
+    const input = document.getElementById('modelInput'),
+          meshButtons = document.getElementById('meshButtons'),
+          animsPanel = document.getElementById('animations'),
+          selectedMeshPanel = document.getElementById('selectedMesh');
 
     let reticle = new THREE.Mesh(
-      new THREE.RingGeometry(0.05, 0.08, 32).rotateX(-Math.PI/2),
-      new THREE.MeshBasicMaterial({ color: 0x00ff00 })
+      new THREE.RingGeometry(0.07,0.1,32).rotateX(-Math.PI/2),
+      new THREE.MeshBasicMaterial({color:0x00ff00})
     );
     reticle.matrixAutoUpdate = false;
     reticle.visible = false;
     scene.add(reticle);
 
-    let hitTestSource = null;
-    let hitTestSourceRequested = false;
-    let placedModel = null;
-    let modelPlaced = false;
+    let hitTestSource = null, hitTestRequested = false;
+    let placedModel = null, modelPlaced = false;
+    let mixer = null, clock = new THREE.Clock(), meshList = [], animClips = [];
 
-    // Gesture helpers
-    let isDragging = false, previousTouches = [], dragOffset = new THREE.Vector3(), initialScale = 1;
-    function getTouchPoint(e) {
-      const x = (e.clientX/window.innerWidth)*2 -1;
-      const y = -(e.clientY/window.innerHeight)*2 +1;
-      return new THREE.Vector2(x, y);
-    }
-    function screenToWorld(sp, cam, depth=0.5) {
-      const vec = new THREE.Vector3(sp.x, sp.y, 0.5).unproject(cam);
-      const dir = vec.sub(cam.position).normalize();
-      return cam.position.clone().add(dir.multiplyScalar(depth));
-    }
+    // Gesture state
+    let touches = new Map(), startDist = 0, startScale = 1;
+    let offset = new THREE.Vector3(), startPoint = new THREE.Vector3();
 
-    function processModel(model, animations=[]) {
-      if (placedModel) scene.remove(placedModel);
-      placedModel = model;
-
-      meshList = []; audioList = []; animationList = animations;
-      model.traverse(child => {
-        if (child.isMesh) meshList.push(child);
-        if (child.type === 'Audio') audioList.push(child);
-      });
-
-      const box = new THREE.Box3().setFromObject(model);
-      const center = box.getCenter(new THREE.Vector3());
-      model.position.sub(center);
-      const size = box.getSize(new THREE.Vector3());
-      const scale = Math.min(1, 0.6/Math.max(size.x, size.y, size.z));
-      model.scale.setScalar(scale);
-      model.position.y = 0;
-
-      mixer = animations.length ? new THREE.AnimationMixer(model) : null;
-
-      meshButtons.innerHTML = '';
-      animations.forEach((clip, i) => {
-        const btn = document.createElement('button');
-        btn.textContent = clip.name || `Animation ${i+1}`;
-        btn.onclick = () => {
-          mixer.stopAllAction();
-          mixer.clipAction(clip).reset().play();
-        };
-        meshButtons.appendChild(btn);
-      });
-
-      animationsPanel.textContent = JSON.stringify(animations.map(a=>a.name),null,2);
-      audiosPanel.textContent = JSON.stringify(audioList.map((_,i)=>`Audio ${i}`),null,2);
-      selectedMeshPanel.textContent = 'None';
+    function onPointerDown(e) {
+      if (!modelPlaced) return;
+      renderer.domElement.setPointerCapture(e.pointerId);
+      touches.set(e.pointerId, e);
+      if (touches.size === 2) {
+        const [a,b] = [...touches.values()];
+        startDist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+        startScale = placedModel.scale.x;
+      }
     }
 
-    input.addEventListener('change', e => {
-      const file = e.target.files[0]; if (!file) return;
+    function onPointerMove(e) {
+      if (!modelPlaced || !touches.has(e.pointerId)) return;
+      touches.set(e.pointerId, e);
+      if (touches.size === 1) {
+        const touch = touches.values().next().value;
+        const ndc = new THREE.Vector2(
+          (touch.clientX/window.innerWidth)*2 -1,
+          -(touch.clientY/window.innerHeight)*2 +1
+        );
+        const ray = new THREE.Raycaster().setFromCamera(ndc, camera);
+        const newPos = ray.ray.origin.clone().add(ray.ray.direction.multiplyScalar(camera.position.distanceTo(placedModel.position)));
+        placedModel.position.copy(newPos).add(offset);
+      } else if (touches.size === 2) {
+        const [a,b] = [...touches.values()];
+        const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+        placedModel.scale.setScalar(startScale * (dist / startDist));
+      }
+    }
+
+    function onPointerUp(e) {
+      if (!modelPlaced || !touches.has(e.pointerId)) return;
+      if (touches.size === 1) {
+        const touch = touches.values().next().value;
+        const ndc = new THREE.Vector2(
+          (touch.clientX/window.innerWidth)*2 -1,
+          -(touch.clientY/window.innerHeight)*2 +1
+        );
+        const ray = new THREE.Raycaster().setFromCamera(ndc, camera);
+        const newPos = ray.ray.origin.clone().add(ray.ray.direction.multiplyScalar(camera.position.distanceTo(placedModel.position)));
+        offset.copy(placedModel.position).sub(newPos);
+      }
+      touches.delete(e.pointerId);
+      renderer.domElement.releasePointerCapture(e.pointerId);
+    }
+
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+    renderer.domElement.addEventListener('pointerup', onPointerUp);
+
+    input.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
       const reader = new FileReader();
       reader.onload = evt => {
-        const buf = evt.target.result;
-        if (file.name.toLowerCase().endsWith('.fbx')) {
-          const model = fbxLoader.parse(buf, '');
-          processModel(model, []);
-        } else {
-          gltfLoader.parse(buf, '', gltf => processModel(gltf.scene, gltf.animations));
-        }
+        loader.parse(evt.target.result, '', gltf => {
+          if (placedModel) scene.remove(placedModel);
+          placedModel = gltf.scene;
+          meshList = [];
+          animClips = gltf.animations;
+
+          placedModel.traverse(c => c.isMesh && meshList.push(c));
+          const bbox = new THREE.Box3().setFromObject(placedModel);
+          const center = bbox.getCenter(new THREE.Vector3());
+          placedModel.position.sub(center);
+          const size = bbox.getSize(new THREE.Vector3());
+          const s = Math.min(1, 0.6/Math.max(size.x,size.y,size.z));
+          placedModel.scale.setScalar(s);
+          mixer = animClips.length > 0 ? new THREE.AnimationMixer(placedModel) : null;
+
+          meshButtons.innerHTML = '';
+          animClips.forEach(c => {
+            const btn = document.createElement('button');
+            btn.textContent = c.name;
+            btn.onclick = ()=>{ mixer.stopAllAction(); mixer.clipAction(c).play(); };
+            meshButtons.appendChild(btn);
+          });
+
+          animsPanel.textContent = JSON.stringify(animClips.map(a => a.name), null, 2);
+          selectedMeshPanel.textContent = 'None';
+        });
       };
       reader.readAsArrayBuffer(file);
-    });
+    };
 
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
-
-    window.addEventListener('click', event => {
-      mouse.x = (event.clientX/window.innerWidth)*2 -1;
-      mouse.y = -(event.clientY/window.innerHeight)*2 +1;
+    window.addEventListener('click', e => {
+      mouse.x = (e.clientX/window.innerWidth)*2 -1;
+      mouse.y = -(e.clientY/window.innerHeight)*2 +1;
       raycaster.setFromCamera(mouse, camera);
-      handleRaycast(raycaster);
-    });
-
-    const controller = renderer.xr.getController(0);
-    controller.addEventListener('select', () => {
-      if (reticle.visible && placedModel && !modelPlaced) {
-        placedModel.position.setFromMatrixPosition(reticle.matrix);
-        scene.add(placedModel);
-        reticle.visible = false;
-        hitTestSourceRequested = true;
-        hitTestSource = null;
-        modelPlaced = true;
-      } else {
-        raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
-        raycaster.ray.direction.set(0, 0, -1).transformDirection(controller.matrixWorld);
-        handleRaycast(raycaster);
-      }
-    });
-    scene.add(controller);
-
-    function handleRaycast(ray) {
-      const intersects = ray.intersectObjects(meshList, true);
+      const intersects = raycaster.intersectObjects(meshList, true);
       if (intersects.length) {
         const mesh = intersects[0].object;
-        selectedMeshPanel.textContent = mesh.name || 'Unnamed Mesh';
-        const idx = meshList.indexOf(mesh);
-        if (audioList[idx]) { audioList[idx].setVolume(1); audioList[idx].play(); }
-        if (mixer && mesh.name) {
-          const clip = animationList.find(c => c.name === mesh.name);
-          if (clip) { mixer.stopAllAction(); mixer.clipAction(clip).reset().play(); }
-        }
-      }
-    }
-
-    renderer.domElement.addEventListener('pointerdown', e => {
-      if (!modelPlaced || !placedModel) return;
-      renderer.domElement.setPointerCapture(e.pointerId);
-      isDragging = true;
-      previousTouches = [e];
-      initialScale = placedModel.scale.x;
-    });
-
-    renderer.domElement.addEventListener('pointermove', e => {
-      if (!isDragging || !placedModel) return;
-      const dom = renderer.domElement;
-      const idx = previousTouches.findIndex(t=>t.pointerId===e.pointerId);
-      if (idx === -1) previousTouches.push(e); else previousTouches[idx] = e;
-
-      if (previousTouches.length === 1) {
-        const pt = getTouchPoint(previousTouches[0]);
-        const depth = camera.position.distanceTo(placedModel.position);
-        const world = screenToWorld(pt, camera, depth);
-        placedModel.position.copy(world).add(dragOffset);
-      } else if (previousTouches.length === 2) {
-        const [a, b] = previousTouches;
-        const dist = Math.hypot(b.clientX-a.clientX, b.clientY-a.clientY);
-        if (!dom._lastPinchDist) dom._lastPinchDist = dist;
-        const scaleFactor = dist/dom._lastPinchDist;
-        placedModel.scale.setScalar(initialScale*scaleFactor);
-      }
-    });
-
-    renderer.domElement.addEventListener('pointerup', e => {
-      const dom = renderer.domElement;
-      dom.releasePointerCapture(e.pointerId);
-      if (!isDragging) return;
-
-      if (previousTouches.length === 1) {
-        const pt = getTouchPoint(previousTouches[0]);
-        const depth = camera.position.distanceTo(placedModel.position);
-        const world = screenToWorld(pt, camera, depth);
-        dragOffset = placedModel.position.clone().sub(world);
-      }
-
-      previousTouches = previousTouches.filter(t => t.pointerId !== e.pointerId);
-      if (previousTouches.length === 0) {
-        isDragging = false;
-        dom._lastPinchDist = null;
+        selectedMeshPanel.textContent = mesh.name;
       }
     });
 
     renderer.setAnimationLoop((time, frame) => {
       if (mixer) mixer.update(clock.getDelta());
+
       if (frame && !modelPlaced) {
-        const session = renderer.xr.getSession();
-        const refSpace = renderer.xr.getReferenceSpace();
-
-        if (!hitTestSourceRequested) {
-          session.requestReferenceSpace('viewer').then(viewerRef => {
-            session.requestHitTestSource({ space: viewerRef }).then(src => hitTestSource = src);
+        const sess = renderer.xr.getSession();
+        const ref = renderer.xr.getReferenceSpace();
+        if (!hitTestRequested) {
+          sess.requestReferenceSpace('viewer').then(vr => {
+            return sess.requestHitTestSource({ space: vr }).then(src => { hitTestSource = src; });
           });
-          session.addEventListener('end', () => {
-            hitTestSourceRequested = false;
-            hitTestSource = null;
-            modelPlaced = false;
-          });
-          hitTestSourceRequested = true;
+          sess.addEventListener('end', ()=>{ hitTestRequested=false; hitTestSource=null; modelPlaced=false; });
+          hitTestRequested = true;
         }
-
         if (hitTestSource) {
-          const results = frame.getHitTestResults(hitTestSource);
-          if (results.length) {
-            const hit = results[0];
-            const pose = hit.getPose(refSpace);
+          const hits = frame.getHitTestResults(hitTestSource);
+          if (hits.length) {
+            const pose = hits[0].getPose(ref);
             reticle.visible = true;
             reticle.matrix.fromArray(pose.transform.matrix);
           } else reticle.visible = false;
         }
       }
+
+      const controller = renderer.xr.getController(0);
+      controller.addEventListener('select', () => {
+        if (reticle.visible && placedModel && !modelPlaced) {
+          placedModel.position.setFromMatrixPosition(reticle.matrix);
+          scene.add(placedModel);
+          modelPlaced = true;
+          reticle.visible = false;
+        }
+      });
 
       renderer.render(scene, camera);
     });
