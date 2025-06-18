@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>3D Viewer with AR + Dynamic Dropdown</title>
+  <title>3D Viewer: AR Mode with GLB + FBX</title>
   <script type="importmap">
     {
       "imports": {
@@ -16,10 +16,12 @@
   </script>
   <style>
     body { margin: 0; overflow: hidden; font-family: sans-serif; }
-    #modelSelect { position: absolute; top: 10px; left: 10px; z-index: 10; padding: 5px; }
+    #modelInput { position: absolute; top: 10px; left: 10px; z-index: 10; }
     #infoPanel {
-      position: absolute; top: 0; right: 0; width: 300px; height: 100%;
-      overflow-y: auto; background: #111; color: #eee;
+      position: absolute; top: 0; right: 0;
+      width: 300px; height: 100%;
+      overflow-y: auto;
+      background: #111; color: #eee;
       padding: 15px; box-sizing: border-box;
       font-size: 14px; z-index: 10;
     }
@@ -35,13 +37,16 @@
   </style>
 </head>
 <body>
-  <select id="modelSelect"><option>Loading models...</option></select>
-
+  <input type="file" id="modelInput" accept=".glb,.gltf,.fbx" />
   <div id="infoPanel">
-    <h3>Animations</h3><div id="meshButtons">–</div>
-    <h3>All Animation Names</h3><pre id="animations"></pre>
-    <h3>Audios</h3><pre id="audios"></pre>
-    <h3>Selected Mesh</h3><div id="selectedMesh">–</div>
+    <h3>Animations</h3>
+    <div id="meshButtons">Load a model to see animations...</div>
+    <h3>All Animation Names</h3>
+    <pre id="animations"></pre>
+    <h3>Audios</h3>
+    <pre id="audios"></pre>
+    <h3>Selected Mesh</h3>
+    <div id="selectedMesh">None</div>
   </div>
 
   <script type="module">
@@ -53,24 +58,28 @@
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xffffff);
+
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
     camera.position.set(2, 2, 4);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.xr.enabled = true;
+    renderer.xr.enabled = true; // Enable WebXR
     document.body.appendChild(renderer.domElement);
-    document.body.appendChild(ARButton.createButton(renderer));
+
+    document.body.appendChild(ARButton.createButton(renderer)); // AR Button
 
     const controls = new OrbitControls(camera, renderer.domElement);
+
     const listener = new THREE.AudioListener();
     camera.add(listener);
+
     scene.add(new THREE.AmbientLight(0xffffff, 1));
 
     const gltfLoader = new GLTFLoader();
     const fbxLoader = new FBXLoader();
 
-    const select = document.getElementById('modelSelect');
+    const input = document.getElementById('modelInput');
     const meshButtons = document.getElementById('meshButtons');
     const animationsPanel = document.getElementById('animations');
     const audiosPanel = document.getElementById('audios');
@@ -80,45 +89,11 @@
     const clock = new THREE.Clock();
     let meshList = [], audioList = [], animationList = [];
 
-    // Fetch model list dynamically
-    fetch('/models') // must be handled by backend
-      .then(res => res.json())
-      .then(models => {
-        select.innerHTML = `<option disabled selected>Select a model...</option>`;
-        models.forEach(name => {
-          const opt = document.createElement('option');
-          opt.value = name;
-          opt.textContent = name;
-          select.appendChild(opt);
-        });
-      })
-      .catch(err => {
-        select.innerHTML = `<option>Error loading models</option>`;
-        console.error(err);
-      });
-
-    // Handle dropdown change
-    select.addEventListener('change', () => {
-      const file = select.value;
-      if (!file) return;
-
-      while (scene.children.length > 2) {
-        scene.remove(scene.children[scene.children.length - 1]);
-      }
-
-      const fileExt = file.toLowerCase().split('.').pop();
-      const path = `./models/${file}`;
-
-      if (fileExt === 'fbx') {
-        fbxLoader.load(path, obj => processModel(obj, []));
-      } else if (fileExt === 'glb' || fileExt === 'gltf') {
-        gltfLoader.load(path, gltf => processModel(gltf.scene, gltf.animations));
-      }
-    });
-
     function processModel(model, animations = []) {
       scene.add(model);
-      meshList = []; audioList = []; animationList = animations;
+      meshList = [];
+      audioList = [];
+      animationList = animations;
 
       model.traverse(child => {
         if (child.isMesh) meshList.push(child);
@@ -151,22 +126,50 @@
       selectedMeshPanel.textContent = 'None';
     }
 
-    // Raycasting to trigger animations/sound on click
+    input.addEventListener('change', event => {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const filename = file.name.toLowerCase();
+      const reader = new FileReader();
+      reader.onload = e => {
+        const buffer = e.target.result;
+
+        while (scene.children.length > 2) {
+          scene.remove(scene.children[scene.children.length - 1]);
+        }
+
+        if (filename.endsWith('.fbx')) {
+          const obj = fbxLoader.parse(buffer, '');
+          processModel(obj, []);
+        } else {
+          gltfLoader.parse(buffer, '', gltf => {
+            processModel(gltf.scene, gltf.animations);
+          }, err => console.error('GLTF error', err));
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
+
     window.addEventListener('click', event => {
       mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
       mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
       raycaster.setFromCamera(mouse, camera);
       const intersects = raycaster.intersectObjects(meshList, true);
       if (intersects.length > 0) {
         const mesh = intersects[0].object;
         selectedMeshPanel.textContent = mesh.name || 'Unnamed Mesh';
+
         const idx = meshList.indexOf(mesh);
         if (idx !== -1 && audioList[idx]) {
           audioList[idx].setVolume(1.0);
           audioList[idx].play();
         }
+
         if (mixer && mesh.name) {
           const clip = animationList.find(c => c.name === mesh.name);
           if (clip) {
@@ -177,10 +180,13 @@
       }
     });
 
-    renderer.setAnimationLoop(() => {
-      if (mixer) mixer.update(clock.getDelta());
-      renderer.render(scene, camera);
-    });
+    function animate() {
+      renderer.setAnimationLoop(() => {
+        if (mixer) mixer.update(clock.getDelta());
+        renderer.render(scene, camera);
+      });
+    }
+    animate();
 
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
