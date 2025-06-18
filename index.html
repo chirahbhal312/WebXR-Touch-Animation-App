@@ -1,139 +1,179 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>AR Cube with Gesture & animate()</title>
+  <meta charset="UTF-8"/>
+  <title>AR Viewer – Model + Gestures + Animations</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>body { margin:0; overflow:hidden; }</style>
   <script type="importmap">
-    {
-      "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-        "three/examples/jsm/webxr/ARButton.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/ARButton.js"
-      }
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+      "three/examples/jsm/loaders/GLTFLoader": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/loaders/GLTFLoader.js",
+      "three/examples/jsm/controls/OrbitControls": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js",
+      "three/examples/jsm/webxr/ARButton": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/webxr/ARButton.js"
     }
+  }
   </script>
 </head>
 <body>
+<input type="file" id="modelInput" accept=".glb,.gltf"/>
 <script type="module">
-import * as THREE from 'three';
-import { ARButton } from 'three/examples/jsm/webxr/ARButton.js';
+import * as THREE        from 'three';
+import { GLTFLoader }    from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { ARButton }      from 'three/examples/jsm/webxr/ARButton.js';
 
 let scene, camera, renderer, controller;
-let cube = null, cubePlaced = false;
-let selectedObject = null;
+let model = null, mixer = null;
+let hitTestSource = null, hitTestRequested = false;
+let modelPlaced = false;
 
 let isDragging = false;
+const raycaster = new THREE.Raycaster();
 const dragPlane = new THREE.Plane();
-const dragOffset = new THREE.Vector3();
-const dragIntersection = new THREE.Vector3();
+const dragOffset = new THREE.Vector3(), dragIntersect = new THREE.Vector3();
 
 let initialDist = 0, initialScale = 1;
-let rotationStartAngle = 0, initialRotY = 0;
-const raycaster = new THREE.Raycaster();
+let rotationStart = 0, initialRotY = 0;
 
-// Setup scene
+// Scene setup
 scene = new THREE.Scene();
 camera = new THREE.PerspectiveCamera();
-renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
-document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures:['hit-test'] }));
-
+document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
 scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1));
 
-// Place cube on select
+// Reticle for placement
+const reticle = new THREE.Mesh(
+  new THREE.RingGeometry(0.06, 0.09, 32).rotateX(-Math.PI/2),
+  new THREE.MeshBasicMaterial({ color: 0x00FF00 })
+);
+reticle.matrixAutoUpdate = false;
+reticle.visible = false;
+scene.add(reticle);
+
+// Load user model
+const loader = new GLTFLoader();
+document.getElementById('modelInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = evt => {
+    loader.parse(evt.target.result, '', gltf => {
+      if (model) scene.remove(model);
+      model = gltf.scene;
+      mixer = new THREE.AnimationMixer(model);
+      gltf.animations.forEach(clip => mixer.clipAction(clip).play());
+      model.traverse(c => c.castShadow = true);
+      scene.add(model);
+      modelPlaced = true;
+    });
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+// Controller for taps & hit testing
 controller = renderer.xr.getController(0);
 controller.addEventListener('select', () => {
-  if (cubePlaced) return;
-
-  const size = 0.1;
-  const geometry = new THREE.BoxGeometry(size, size, size);
-  const material = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
-  cube = new THREE.Mesh(geometry, material);
-  scene.add(cube);
-
-  // Place cube 1.5 meters in front
-  const dir = new THREE.Vector3();
-  camera.getWorldDirection(dir);
-  cube.position.copy(camera.position).add(dir.multiplyScalar(1.5));
-
-  cubePlaced = true;
-  selectedObject = cube;
+  if (reticle.visible && model && !modelPlaced) {
+    model.position.setFromMatrixPosition(reticle.matrix);
+    model.quaternion.setFromRotationMatrix(reticle.matrix);
+    scene.add(model);
+    modelPlaced = true;
+  }
 });
 scene.add(controller);
 
-// Touch gestures
+// Gesture handlers
 window.addEventListener('touchstart', e => {
-  if (!cubePlaced) return;
-
+  if (!modelPlaced) return;
   if (e.touches.length === 1) {
     isDragging = true;
     const touch = e.touches[0];
     const ndc = new THREE.Vector2(
-      (touch.clientX / window.innerWidth) * 2 - 1,
-      -(touch.clientY / window.innerHeight) * 2 + 1
+      touch.clientX / window.innerWidth * 2 - 1,
+      -touch.clientY / window.innerHeight * 2 + 1
     );
     raycaster.setFromCamera(ndc, camera);
     dragPlane.setFromNormalAndCoplanarPoint(
       camera.getWorldDirection(new THREE.Vector3()).normalize(),
-      cube.position
+      model.position
     );
-    if (raycaster.ray.intersectPlane(dragPlane, dragIntersection)) {
-      dragOffset.copy(dragIntersection).sub(cube.position);
+    if (raycaster.ray.intersectPlane(dragPlane, dragIntersect)) {
+      dragOffset.copy(dragIntersect).sub(model.position);
     }
   } else if (e.touches.length === 2) {
-    const dx = e.touches[0].clientX - e.touches[1].clientX;
-    const dy = e.touches[0].clientY - e.touches[1].clientY;
-    initialDist = Math.hypot(dx, dy);
-    initialScale = cube.scale.x;
-    rotationStartAngle = Math.atan2(dy, dx);
-    initialRotY = cube.rotation.y;
+    const [a, b] = e.touches;
+    initialDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    initialScale = model.scale.x;
+    rotationStart = Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX);
+    initialRotY = model.rotation.y;
   }
 });
 
 window.addEventListener('touchmove', e => {
-  if (!cubePlaced) return;
-
+  if (!modelPlaced) return;
+  e.preventDefault();
   if (e.touches.length === 1 && isDragging) {
-    const touch = e.touches[0];
+    const t = e.touches[0];
     const ndc = new THREE.Vector2(
-      (touch.clientX / window.innerWidth) * 2 - 1,
-      -(touch.clientY / window.innerHeight) * 2 + 1
+      t.clientX / window.innerWidth * 2 - 1,
+      -t.clientY / window.innerHeight * 2 + 1
     );
     raycaster.setFromCamera(ndc, camera);
-    if (raycaster.ray.intersectPlane(dragPlane, dragIntersection)) {
-      cube.position.copy(dragIntersection.sub(dragOffset));
+    if (raycaster.ray.intersectPlane(dragPlane, dragIntersect)) {
+      model.position.copy(dragIntersect.sub(dragOffset));
     }
   } else if (e.touches.length === 2) {
-    const dx = e.touches[0].clientX - e.touches[1].clientX;
-    const dy = e.touches[0].clientY - e.touches[1].clientY;
-    const newDist = Math.hypot(dx, dy);
-    const scale = initialScale * (newDist / initialDist);
-    cube.scale.setScalar(scale);
-    const angle = Math.atan2(dy, dx);
-    cube.rotation.y = initialRotY + (angle - rotationStartAngle);
+    const [a, b] = e.touches;
+    const newDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    model.scale.setScalar(initialScale * (newDist / initialDist));
+    const newAngle = Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX);
+    model.rotation.y = initialRotY + (newAngle - rotationStart);
   }
 }, { passive: false });
 
-window.addEventListener('touchend', () => {
-  isDragging = false;
-});
+window.addEventListener('touchend', () => { isDragging = false; });
 
-// Handle resize
+// Resize handler
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
 });
 
-// Named animate function
+// Animate + XR loop
 function animate(timestamp, frame) {
+  if (mixer) mixer.update(renderer.xr.getSession() ? renderer.xr.getFrame().deltaTime * 0.001 : 0.016);
+
+  if (frame && !modelPlaced) {
+    const session = renderer.xr.getSession();
+    const refSpace = renderer.xr.getReferenceSpace();
+
+    if (!hitTestRequested) {
+      session.requestReferenceSpace('viewer').then(v => {
+        session.requestHitTestSource({ space: v }).then(src => hitTestSource = src);
+      });
+      session.addEventListener('end', () => hitTestRequested = false);
+      hitTestRequested = true;
+    }
+
+    if (hitTestSource) {
+      const hits = frame.getHitTestResults(hitTestSource);
+      if (hits.length) {
+        const pose = hits[0].getPose(refSpace);
+        reticle.matrix.fromArray(pose.transform.matrix);
+        reticle.visible = true;
+      } else reticle.visible = false;
+    }
+  }
+
   renderer.render(scene, camera);
 }
 
-// WebXR-compatible render loop
 renderer.setAnimationLoop(animate);
 </script>
 </body>
