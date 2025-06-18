@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>3D Viewer: AR Mode with GLB + FBX</title>
+  <title>AR Viewer with Reticle & Scaling</title>
   <script type="importmap">
     {
       "imports": {
@@ -20,16 +20,12 @@
     #infoPanel {
       position: absolute; top: 0; right: 0;
       width: 300px; height: 100%;
-      overflow-y: auto;
-      background: #111; color: #eee;
-      padding: 15px; box-sizing: border-box;
-      font-size: 14px; z-index: 10;
+      overflow-y: auto; background: #111; color: #eee;
+      padding: 15px; box-sizing: border-box; font-size: 14px;
     }
     #meshButtons button {
-      display: block; width: 100%;
-      margin-bottom: 5px;
-      background: #333; color: #fff;
-      border: none; padding: 5px;
+      display: block; width: 100%; margin-bottom: 5px;
+      background: #333; color: #fff; border: none; padding: 5px;
       cursor: pointer;
     }
     #meshButtons button:hover { background: #555; }
@@ -48,7 +44,6 @@
     <h3>Selected Mesh</h3>
     <div id="selectedMesh">None</div>
   </div>
-
   <script type="module">
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
@@ -59,23 +54,19 @@
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xffffff);
 
-    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
-    camera.position.set(2, 2, 4);
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.01, 100);
+    camera.position.set(2,2,4);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.xr.enabled = true;
     document.body.appendChild(renderer.domElement);
-
-    document.body.appendChild(ARButton.createButton(renderer));
+    document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
 
     const controls = new OrbitControls(camera, renderer.domElement);
-
     const listener = new THREE.AudioListener();
     camera.add(listener);
-
-    scene.add(new THREE.AmbientLight(0xffffff, 1));
-
+    scene.add(new THREE.AmbientLight(0xffffff,1));
     const gltfLoader = new GLTFLoader();
     const fbxLoader = new FBXLoader();
 
@@ -85,136 +76,140 @@
     const audiosPanel = document.getElementById('audios');
     const selectedMeshPanel = document.getElementById('selectedMesh');
 
-    let mixer = null;
-    const clock = new THREE.Clock();
+    let mixer = null, clock = new THREE.Clock();
     let meshList = [], audioList = [], animationList = [];
+    let reticle, hitTestSource = null, hitTestSourceRequested = false;
+    let placedModel = null;
 
+    // reticle setup
+    reticle = new THREE.Mesh(
+      new THREE.RingGeometry(0.05, 0.08, 32).rotateX(-Math.PI/2),
+      new THREE.MeshBasicMaterial({ color: 0x0fff00 })
+    );
+    reticle.matrixAutoUpdate = false;
+    reticle.visible = false;
+    scene.add(reticle);
+
+    // load & scale model
     function processModel(model, animations = []) {
-      scene.add(model);
-      meshList = [];
-      audioList = [];
-      animationList = animations;
+      if (placedModel) scene.remove(placedModel);
+      placedModel = model;
+      meshList = []; audioList = []; animationList = animations;
 
-      model.traverse(child => {
-        if (child.isMesh) meshList.push(child);
-        if (child.type === 'Audio') audioList.push(child);
+      model.traverse(c => {
+        if (c.isMesh) meshList.push(c);
+        if (c.type==='Audio') audioList.push(c);
       });
 
       const box = new THREE.Box3().setFromObject(model);
       const center = box.getCenter(new THREE.Vector3());
       model.position.sub(center);
 
-      // 🔥 Auto-scale model to max 80% of AR viewport
       const sizeVec = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(sizeVec.x, sizeVec.y, sizeVec.z);
-      const maxAllowed = 0.8;
-      const scale = maxAllowed / maxDim;
-      if (scale < 1) model.scale.setScalar(scale);
+      const maxUnits = 0.6;
+      const s = maxUnits / maxDim;
+      model.scale.setScalar(s<1 ? s : 1);
 
-      camera.position.set(2, 2, 4);
-      controls.target.set(0, 0, 0);
-      controls.update();
-
-      mixer = animations.length > 0 ? new THREE.AnimationMixer(model) : null;
-      meshButtons.innerHTML = '';
-      animations.forEach((clip, i) => {
+      model.position.y = 0; // above placement point
+      mixer = animations.length ? new THREE.AnimationMixer(model) : null;
+      meshButtons.innerHTML='';
+      animations.forEach((clip,i)=>{
         const btn = document.createElement('button');
-        btn.textContent = clip.name || `Animation ${i + 1}`;
-        btn.onclick = () => {
+        btn.textContent = clip.name||`Animation ${i+1}`;
+        btn.onclick = ()=>{
           mixer.stopAllAction();
           mixer.clipAction(clip).reset().play();
         };
         meshButtons.appendChild(btn);
       });
 
-      animationsPanel.textContent = JSON.stringify(animations.map(a => a.name), null, 2);
-      audiosPanel.textContent = JSON.stringify(audioList.map((_, i) => `Audio ${i}`), null, 2);
+      animationsPanel.textContent = JSON.stringify(animations.map(a=>a.name), null, 2);
+      audiosPanel.textContent = JSON.stringify(audioList.map((_,i)=>`Audio ${i}`), null, 2);
       selectedMeshPanel.textContent = 'None';
     }
 
-    input.addEventListener('change', event => {
-      const file = event.target.files[0];
+    input.onchange = e => {
+      const file = e.target.files[0];
       if (!file) return;
-
-      const filename = file.name.toLowerCase();
+      const name = file.name.toLowerCase();
       const reader = new FileReader();
-      reader.onload = e => {
-        const buffer = e.target.result;
-
-        while (scene.children.length > 2) {
-          scene.remove(scene.children[scene.children.length - 1]);
-        }
-
-        if (filename.endsWith('.fbx')) {
-          const obj = fbxLoader.parse(buffer, '');
-          processModel(obj, []);
-        } else {
-          gltfLoader.parse(buffer, '', gltf => {
-            processModel(gltf.scene, gltf.animations);
-          }, err => console.error('GLTF error', err));
-        }
+      reader.onload = evt => {
+        const buf = evt.target.result;
+        gltfLoader.parse(buf, '', gltf => processModel(gltf.scene, gltf.animations), err=>console.error(err));
       };
-      reader.readAsArrayBuffer(file);
-    });
+      if (name.endsWith('.fbx')) reader.readAsArrayBuffer(file);
+      else reader.readAsArrayBuffer(file);
+    };
 
-    const raycaster = new THREE.Raycaster();
-    const mouse = new THREE.Vector2();
-
-    window.addEventListener('click', event => {
-      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
+    const raycaster = new THREE.Raycaster(), mouse = new THREE.Vector2();
+    window.addEventListener('click', e=>{
+      mouse.x = (e.clientX/window.innerWidth)*2-1;
+      mouse.y = -(e.clientY/window.innerHeight)*2+1;
       raycaster.setFromCamera(mouse, camera);
-      handleRaycast(raycaster);
+      doRay(raycaster);
     });
 
+    // AR touch
     const controller = renderer.xr.getController(0);
+    controller.addEventListener('select', ()=>{
+      if(reticle.visible && placedModel){
+        placedModel.position.setFromMatrixPosition(reticle.matrix);
+        scene.add(placedModel);
+      } else {
+        raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+        raycaster.ray.direction.set(0,0,-1).transformDirection(controller.matrixWorld);
+        doRay(raycaster);
+      }
+    });
     scene.add(controller);
 
-    controller.addEventListener('select', () => {
-      const tempMatrix = new THREE.Matrix4();
-      tempMatrix.identity().extractRotation(controller.matrixWorld);
-
-      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
-      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
-
-      handleRaycast(raycaster);
-    });
-
-    function handleRaycast(raycaster) {
-      const intersects = raycaster.intersectObjects(meshList, true);
-      if (intersects.length > 0) {
-        const mesh = intersects[0].object;
-        selectedMeshPanel.textContent = mesh.name || 'Unnamed Mesh';
-
+    function doRay(r){
+      const ints = r.intersectObjects(meshList,true);
+      if(ints.length){
+        const mesh = ints[0].object;
+        selectedMeshPanel.textContent = mesh.name||'Unnamed';
         const idx = meshList.indexOf(mesh);
-        if (idx !== -1 && audioList[idx]) {
-          audioList[idx].setVolume(1.0);
-          audioList[idx].play();
+        if(idx>=0 && audioList[idx]){
+          audioList[idx].setVolume(1); audioList[idx].play();
         }
-
-        if (mixer && mesh.name) {
-          const clip = animationList.find(c => c.name === mesh.name);
-          if (clip) {
-            mixer.stopAllAction();
-            mixer.clipAction(clip).reset().play();
-          }
+        if(mixer && mesh.name){
+          const clip = animationList.find(c=>c.name===mesh.name);
+          if(clip){ mixer.stopAllAction(); mixer.clipAction(clip).reset().play(); }
         }
       }
     }
 
-    function animate() {
-      renderer.setAnimationLoop(() => {
-        if (mixer) mixer.update(clock.getDelta());
-        renderer.render(scene, camera);
-      });
-    }
-    animate();
+    renderer.setAnimationLoop((time, frame)=>{
+      if(frame){
+        const refSpace = renderer.xr.getReferenceSpace();
+        const session = renderer.xr.getSession();
+        if(!hitTestSourceRequested){
+          session.requestReferenceSpace('viewer').then(viewerRef=>{
+            session.requestHitTestSource({space: viewerRef})
+              .then(src=>hitTestSource = src);
+          });
+          session.addEventListener('end', () => hitTestSourceRequested = false);
+          hitTestSourceRequested = true;
+        }
+        if(hitTestSource){
+          const hit = frame.getHitTestResults(hitTestSource);
+          if(hit.length){
+            const {pose} = hit[0].getPose(refSpace);
+            reticle.visible = true;
+            reticle.matrix.fromArray(pose.transform.matrix);
+          } else {
+            reticle.visible = false;
+          }
+        }
+      }
+      if(mixer) mixer.update(clock.getDelta());
+      renderer.render(scene, camera);
+    });
 
     window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
     });
   </script>
 </body>
