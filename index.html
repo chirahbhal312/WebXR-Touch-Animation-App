@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>3D Viewer with AR + Dynamic Dropdown</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+        "three/examples/jsm/loaders/GLTFLoader": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/loaders/GLTFLoader.js",
+        "three/examples/jsm/loaders/FBXLoader": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/loaders/FBXLoader.js",
+        "three/examples/jsm/controls/OrbitControls": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js",
+        "three/examples/jsm/webxr/ARButton": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/webxr/ARButton.js"
+      }
+    }
+  </script>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: sans-serif; }
+    #modelSelect { position: absolute; top: 10px; left: 10px; z-index: 10; padding: 5px; }
+    #infoPanel {
+      position: absolute; top: 0; right: 0; width: 300px; height: 100%;
+      overflow-y: auto; background: #111; color: #eee;
+      padding: 15px; box-sizing: border-box;
+      font-size: 14px; z-index: 10;
+    }
+    #meshButtons button {
+      display: block; width: 100%;
+      margin-bottom: 5px;
+      background: #333; color: #fff;
+      border: none; padding: 5px;
+      cursor: pointer;
+    }
+    #meshButtons button:hover { background: #555; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <select id="modelSelect"><option>Loading models...</option></select>
+
+  <div id="infoPanel">
+    <h3>Animations</h3><div id="meshButtons">–</div>
+    <h3>All Animation Names</h3><pre id="animations"></pre>
+    <h3>Audios</h3><pre id="audios"></pre>
+    <h3>Selected Mesh</h3><div id="selectedMesh">–</div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+    import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
+    import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+    import { ARButton } from 'three/examples/jsm/webxr/ARButton';
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
+    camera.position.set(2, 2, 4);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+    document.body.appendChild(ARButton.createButton(renderer));
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    const listener = new THREE.AudioListener();
+    camera.add(listener);
+    scene.add(new THREE.AmbientLight(0xffffff, 1));
+
+    const gltfLoader = new GLTFLoader();
+    const fbxLoader = new FBXLoader();
+
+    const select = document.getElementById('modelSelect');
+    const meshButtons = document.getElementById('meshButtons');
+    const animationsPanel = document.getElementById('animations');
+    const audiosPanel = document.getElementById('audios');
+    const selectedMeshPanel = document.getElementById('selectedMesh');
+
+    let mixer = null;
+    const clock = new THREE.Clock();
+    let meshList = [], audioList = [], animationList = [];
+
+    // Fetch model list dynamically
+    fetch('/models') // must be handled by backend
+      .then(res => res.json())
+      .then(models => {
+        select.innerHTML = `<option disabled selected>Select a model...</option>`;
+        models.forEach(name => {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          select.appendChild(opt);
+        });
+      })
+      .catch(err => {
+        select.innerHTML = `<option>Error loading models</option>`;
+        console.error(err);
+      });
+
+    // Handle dropdown change
+    select.addEventListener('change', () => {
+      const file = select.value;
+      if (!file) return;
+
+      while (scene.children.length > 2) {
+        scene.remove(scene.children[scene.children.length - 1]);
+      }
+
+      const fileExt = file.toLowerCase().split('.').pop();
+      const path = `./models/${file}`;
+
+      if (fileExt === 'fbx') {
+        fbxLoader.load(path, obj => processModel(obj, []));
+      } else if (fileExt === 'glb' || fileExt === 'gltf') {
+        gltfLoader.load(path, gltf => processModel(gltf.scene, gltf.animations));
+      }
+    });
+
+    function processModel(model, animations = []) {
+      scene.add(model);
+      meshList = []; audioList = []; animationList = animations;
+
+      model.traverse(child => {
+        if (child.isMesh) meshList.push(child);
+        if (child.type === 'Audio') audioList.push(child);
+      });
+
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      model.position.sub(center);
+
+      const size = box.getSize(new THREE.Vector3()).length();
+      camera.position.set(size, size, size);
+      controls.target.set(0, 0, 0);
+      controls.update();
+
+      mixer = animations.length > 0 ? new THREE.AnimationMixer(model) : null;
+      meshButtons.innerHTML = '';
+      animations.forEach((clip, i) => {
+        const btn = document.createElement('button');
+        btn.textContent = clip.name || `Animation ${i + 1}`;
+        btn.onclick = () => {
+          mixer.stopAllAction();
+          mixer.clipAction(clip).reset().play();
+        };
+        meshButtons.appendChild(btn);
+      });
+
+      animationsPanel.textContent = JSON.stringify(animations.map(a => a.name), null, 2);
+      audiosPanel.textContent = JSON.stringify(audioList.map((_, i) => `Audio ${i}`), null, 2);
+      selectedMeshPanel.textContent = 'None';
+    }
+
+    // Raycasting to trigger animations/sound on click
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    window.addEventListener('click', event => {
+      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(meshList, true);
+      if (intersects.length > 0) {
+        const mesh = intersects[0].object;
+        selectedMeshPanel.textContent = mesh.name || 'Unnamed Mesh';
+        const idx = meshList.indexOf(mesh);
+        if (idx !== -1 && audioList[idx]) {
+          audioList[idx].setVolume(1.0);
+          audioList[idx].play();
+        }
+        if (mixer && mesh.name) {
+          const clip = animationList.find(c => c.name === mesh.name);
+          if (clip) {
+            mixer.stopAllAction();
+            mixer.clipAction(clip).reset().play();
+          }
+        }
+      }
+    });
+
+    renderer.setAnimationLoop(() => {
+      if (mixer) mixer.update(clock.getDelta());
+      renderer.render(scene, camera);
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
