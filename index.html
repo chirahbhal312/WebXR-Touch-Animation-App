@@ -104,8 +104,14 @@
       const center = box.getCenter(new THREE.Vector3());
       model.position.sub(center);
 
-      const size = box.getSize(new THREE.Vector3()).length();
-      camera.position.set(size, size, size);
+      // 🔥 Auto-scale model to max 80% of AR viewport
+      const sizeVec = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(sizeVec.x, sizeVec.y, sizeVec.z);
+      const maxAllowed = 0.8;
+      const scale = maxAllowed / maxDim;
+      if (scale < 1) model.scale.setScalar(scale);
+
+      camera.position.set(2, 2, 4);
       controls.target.set(0, 0, 0);
       controls.update();
 
@@ -162,7 +168,6 @@
       handleRaycast(raycaster);
     });
 
-    // 🔥 AR Controller Raycasting
     const controller = renderer.xr.getController(0);
     scene.add(controller);
 
