@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Viewer with Reticle</title>
+  <title>AR Viewer with Gestures</title>
   <script type="importmap">
     {
       "imports": {
@@ -18,18 +18,12 @@
     body { margin: 0; overflow: hidden; font-family: sans-serif; }
     #modelInput { position: absolute; top: 10px; left: 10px; z-index: 10; }
     #infoPanel {
-      position: absolute; top: 0; right: 0;
-      width: 300px; height: 100%;
-      overflow-y: auto; background: #111; color: #eee;
-      padding: 15px; box-sizing: border-box; font-size: 14px;
+      position: absolute; top: 0; right: 0; width: 300px; height: 100%;
+      overflow-y: auto; background: #111; color: #eee; padding: 15px; font-size: 14px; z-index: 10;
     }
-    #meshButtons button {
-      display: block; width: 100%; margin-bottom: 5px;
-      background: #333; color: #fff; border: none; padding: 5px;
-      cursor: pointer;
-    }
-    #meshButtons button:hover { background: #555; }
-    pre { white-space: pre-wrap; word-break: break-word; }
+    #meshButtons button { display:block; width:100%; margin-bottom:5px; background:#333; color:#fff; border:none; padding:5px; cursor:pointer; }
+    #meshButtons button:hover{background:#555;}
+    pre{white-space:pre-wrap; word-break:break-word;}
   </style>
 </head>
 <body>
@@ -37,12 +31,9 @@
   <div id="infoPanel">
     <h3>Animations</h3>
     <div id="meshButtons">Load a model to see animations...</div>
-    <h3>All Animation Names</h3>
-    <pre id="animations"></pre>
-    <h3>Audios</h3>
-    <pre id="audios"></pre>
-    <h3>Selected Mesh</h3>
-    <div id="selectedMesh">None</div>
+    <h3>All Animation Names</h3><pre id="animations"></pre>
+    <h3>Audios</h3><pre id="audios"></pre>
+    <h3>Selected Mesh</h3><div id="selectedMesh">None</div>
   </div>
   <script type="module">
     import * as THREE from 'three';
@@ -60,9 +51,7 @@
     renderer.xr.enabled = true;
     document.body.appendChild(renderer.domElement);
 
-    document.body.appendChild(
-      ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] })
-    );
+    document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
 
     const controls = new OrbitControls(camera, renderer.domElement);
     renderer.xr.addEventListener('sessionstart', () => controls.enabled = false);
@@ -86,25 +75,30 @@
     let meshList = [], audioList = [], animationList = [];
 
     let reticle = new THREE.Mesh(
-      new THREE.RingGeometry(0.05, 0.08, 32).rotateX(-Math.PI / 2),
+      new THREE.RingGeometry(0.05, 0.08, 32).rotateX(-Math.PI/2),
       new THREE.MeshBasicMaterial({ color: 0x00ff00 })
     );
-    reticle.matrixAutoUpdate = false;
-    reticle.visible = false;
+    reticle.matrixAutoUpdate = false; reticle.visible = false;
     scene.add(reticle);
 
-    let hitTestSource = null;
-    let hitTestSourceRequested = false;
-    let placedModel = null;
-    let modelPlaced = false;
+    let hitTestSource = null, hitTestSourceRequested = false;
+    let placedModel = null, modelPlaced = false;
+
+    // Gesture variables
+    let isDragging = false;
+    let initialDistance = 0;
+    let initialScale = 1;
+    let rotationStartAngle = 0;
+    let initialRotationY = 0;
+    const dragPlane = new THREE.Plane();
+    const dragIntersection = new THREE.Vector3();
+    const dragOffset = new THREE.Vector3();
 
     function processModel(model, animations = []) {
       if (placedModel) scene.remove(placedModel);
       placedModel = model;
 
-      meshList = [];
-      audioList = [];
-      animationList = animations;
+      meshList = []; audioList = []; animationList = animations;
 
       model.traverse(child => {
         if (child.isMesh) meshList.push(child);
@@ -117,17 +111,16 @@
 
       const sizeVec = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(sizeVec.x, sizeVec.y, sizeVec.z);
-      const maxUnits = 0.6;
-      const scale = maxUnits / maxDim;
-      model.scale.setScalar(scale < 1 ? scale : 1);
+      const scale = Math.min(1, 0.6 / maxDim);
+      model.scale.setScalar(scale);
       model.position.y = 0;
 
-      mixer = animations.length > 0 ? new THREE.AnimationMixer(model) : null;
+      mixer = animations.length ? new THREE.AnimationMixer(model) : null;
 
       meshButtons.innerHTML = '';
       animations.forEach((clip, i) => {
         const btn = document.createElement('button');
-        btn.textContent = clip.name || `Animation ${i + 1}`;
+        btn.textContent = clip.name || `Animation ${i+1}`;
         btn.onclick = () => {
           mixer.stopAllAction();
           mixer.clipAction(clip).reset().play();
@@ -136,7 +129,7 @@
       });
 
       animationsPanel.textContent = JSON.stringify(animations.map(a => a.name), null, 2);
-      audiosPanel.textContent = JSON.stringify(audioList.map((_, i) => `Audio ${i}`), null, 2);
+      audiosPanel.textContent = JSON.stringify(audioList.map((_,i)=>`Audio ${i}`), null, 2);
       selectedMeshPanel.textContent = 'None';
     }
 
@@ -150,9 +143,7 @@
           const model = fbxLoader.parse(buffer, '');
           processModel(model, []);
         } else {
-          gltfLoader.parse(buffer, '', gltf => {
-            processModel(gltf.scene, gltf.animations);
-          });
+          gltfLoader.parse(buffer, '', gltf => processModel(gltf.scene, gltf.animations));
         }
       };
       reader.readAsArrayBuffer(file);
@@ -161,9 +152,9 @@
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
 
-    window.addEventListener('click', event => {
-      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    window.addEventListener('click', e => {
+      mouse.x = (e.clientX/window.innerWidth)*2 - 1;
+      mouse.y = -(e.clientY/window.innerHeight)*2 + 1;
       raycaster.setFromCamera(mouse, camera);
       handleRaycast(raycaster);
     });
@@ -179,7 +170,7 @@
         modelPlaced = true;
       } else {
         raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
-        raycaster.ray.direction.set(0, 0, -1).transformDirection(controller.matrixWorld);
+        raycaster.ray.direction.set(0,0,-1).transformDirection(controller.matrixWorld);
         handleRaycast(raycaster);
       }
     });
@@ -191,7 +182,7 @@
         const mesh = intersects[0].object;
         selectedMeshPanel.textContent = mesh.name || 'Unnamed Mesh';
         const idx = meshList.indexOf(mesh);
-        if (idx !== -1 && audioList[idx]) {
+        if (idx >= 0 && audioList[idx]) {
           audioList[idx].setVolume(1.0);
           audioList[idx].play();
         }
@@ -205,47 +196,76 @@
       }
     }
 
+    // Gesture events
+    window.addEventListener('touchstart', e => {
+      if (!placedModel) return;
+      if (e.touches.length === 1) {
+        isDragging = true;
+        const touch = e.touches[0];
+        const ndc = new THREE.Vector2((touch.clientX/window.innerWidth)*2 -1, -(touch.clientY/window.innerHeight)*2 +1);
+        raycaster.setFromCamera(ndc, camera);
+        dragPlane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).normalize(), placedModel.position);
+        if (raycaster.ray.intersectPlane(dragPlane, dragIntersection)) {
+          dragOffset.copy(dragIntersection).sub(placedModel.position);
+        }
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        initialDistance = Math.hypot(dx, dy);
+        initialScale = placedModel.scale.x;
+        rotationStartAngle = Math.atan2(dy, dx);
+        initialRotationY = placedModel.rotation.y;
+      }
+    });
+
+    window.addEventListener('touchmove', e => {
+      if (!placedModel) return;
+      if (e.touches.length === 1 && isDragging) {
+        const touch = e.touches[0];
+        const ndc = new THREE.Vector2((touch.clientX/window.innerWidth)*2 -1, -(touch.clientY/window.innerHeight)*2 +1);
+        raycaster.setFromCamera(ndc, camera);
+        if (raycaster.ray.intersectPlane(dragPlane, dragIntersection)) {
+          placedModel.position.copy(dragIntersection.sub(dragOffset));
+        }
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const newDistance = Math.hypot(dx, dy);
+        const scale = initialScale * (newDistance / initialDistance);
+        placedModel.scale.set(scale, scale, scale);
+        const angle = Math.atan2(dy, dx);
+        placedModel.rotation.y = initialRotationY + (angle - rotationStartAngle);
+      }
+    });
+
+    window.addEventListener('touchend', () => {
+      isDragging = false;
+    });
+
     function animate(time, frame) {
       if (mixer) mixer.update(clock.getDelta());
-
       if (frame && !modelPlaced) {
-        const refSpace = renderer.xr.getReferenceSpace();
-        const session = renderer.xr.getSession();
-
+        const ref = renderer.xr.getReferenceSpace(), session = renderer.xr.getSession();
         if (!hitTestSourceRequested) {
-          session.requestReferenceSpace('viewer').then(viewerRef => {
-            session.requestHitTestSource({ space: viewerRef }).then(source => {
-              hitTestSource = source;
-            });
-          });
-          session.addEventListener('end', () => {
-            hitTestSourceRequested = false;
-            hitTestSource = null;
-            modelPlaced = false;
-          });
+          session.requestReferenceSpace('viewer').then(vref => session.requestHitTestSource({ space: vref }).then(src => hitTestSource = src));
+          session.addEventListener('end', () => { hitTestSourceRequested=false; hitTestSource=null; modelPlaced=false; });
           hitTestSourceRequested = true;
         }
-
         if (hitTestSource) {
           const hits = frame.getHitTestResults(hitTestSource);
           if (hits.length > 0) {
-            const hit = hits[0];
-            const pose = hit.getPose(refSpace);
+            const pose = hits[0].getPose(ref);
             reticle.visible = true;
             reticle.matrix.fromArray(pose.transform.matrix);
-          } else {
-            reticle.visible = false;
-          }
+          } else reticle.visible = false;
         }
       }
-
       renderer.render(scene, camera);
     }
 
     renderer.setAnimationLoop(animate);
-
     window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.aspect = window.innerWidth/window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
