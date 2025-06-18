@@ -3,15 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AR Cube Placement</title>
+  <title>AR Cube with Gestures</title>
 </head>
 <script type="importmap">
   {
     "imports": {
       "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
-      "three/examples/jsm/loaders/GLTFLoader": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/loaders/GLTFLoader.js",
-      "three/examples/jsm/loaders/FBXLoader": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/loaders/FBXLoader.js",
-      "three/examples/jsm/controls/OrbitControls": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js",
       "three/examples/jsm/webxr/ARButton": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/webxr/ARButton.js"
     }
   }
@@ -21,61 +18,117 @@
   import * as THREE from 'three';
   import { ARButton } from 'three/examples/jsm/webxr/ARButton';
 
+  // Scene setup
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera();
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.xr.enabled = true;
   document.body.appendChild(renderer.domElement);
-
   document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1));
 
-  const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
-  scene.add(light);
-
-  // Create cube but don’t place it yet
-  const cubeGeometry = new THREE.BoxGeometry(0.1, 0.1, 0.1); // 10cm cube
-  const cubeMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
-  const cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+  const cube = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 0.1, 0.1),
+    new THREE.MeshStandardMaterial({ color: 0x00ff00 })
+  );
   cube.visible = false;
   scene.add(cube);
 
-  let hitTestSource = null;
-  let hitTestSourceRequested = false;
-  let cubePlaced = false;
+  let hitTestSource = null,
+      hitTestRequested = false;
+  let dragging = false, initialPinchDistance = 0;
 
-  renderer.setAnimationLoop((timestamp, frame) => {
+  renderer.setAnimationLoop((_, frame) => {
     if (frame) {
-      const referenceSpace = renderer.xr.getReferenceSpace();
       const session = renderer.xr.getSession();
+      const refSpace = renderer.xr.getReferenceSpace();
 
-      if (!hitTestSourceRequested) {
-        session.requestReferenceSpace('viewer').then(refSpace => {
-          session.requestHitTestSource({ space: refSpace }).then(source => {
-            hitTestSource = source;
-          });
+      if (!hitTestRequested) {
+        session.requestReferenceSpace('viewer').then(vr => {
+          session.requestHitTestSource({ space: vr }).then(src => hitTestSource = src);
         });
         session.addEventListener('end', () => {
-          hitTestSourceRequested = false;
+          hitTestRequested = false;
           hitTestSource = null;
-          cubePlaced = false;
+          cube.visible = false;
         });
-        hitTestSourceRequested = true;
+        hitTestRequested = true;
       }
 
-      if (hitTestSource && !cubePlaced) {
-        const hitTestResults = frame.getHitTestResults(hitTestSource);
-        if (hitTestResults.length > 0) {
-          const hit = hitTestResults[0];
-          const pose = hit.getPose(referenceSpace);
-          cube.visible = true;
+      // Place cube initially
+      if (!cube.visible && hitTestSource) {
+        const hits = frame.getHitTestResults(hitTestSource);
+        if (hits.length > 0) {
+          const pose = hits[0].getPose(refSpace);
           cube.position.set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
-          cubePlaced = true;
+          cube.visible = true;
         }
       }
     }
 
     renderer.render(scene, camera);
+  });
+
+  // Convert touch to normalized viewport coords
+  function toViewport(touch) {
+    return {
+      x: (touch.clientX / window.innerWidth) * 2 - 1,
+      y: -((touch.clientY / window.innerHeight) * 2 - 1)
+    };
+  }
+
+  async function moveCube(touch) {
+    const session = renderer.xr.getSession();
+    const xrPoint = new XRRay({
+      origin: new DOMPoint(0, 0, 0),
+      direction: new DOMPoint(touch.x, touch.y, -1).matrixTransform(camera.projectionMatrixInverse)
+    });
+    const results = await session.requestHitTest(xrPoint, renderer.xr.getReferenceSpace());
+    if (results.length > 0) {
+      const pose = results[0].getPose(renderer.xr.getReferenceSpace());
+      cube.position.set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+    }
+  }
+
+  renderer.domElement.addEventListener('touchstart', e => {
+    if (!cube.visible) return;
+
+    if (e.touches.length === 1) {
+      dragging = true;
+    } else if (e.touches.length === 2) {
+      initialPinchDistance = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+    }
+  });
+
+  renderer.domElement.addEventListener('touchmove', async e => {
+    if (dragging && e.touches.length === 1) {
+      const vp = toViewport(e.touches[0]);
+      await moveCube(vp);
+    } else if (e.touches.length === 2) {
+      const currDistance = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const scale = currDistance / initialPinchDistance;
+      cube.scale.setScalar(cube.scale.x * scale);
+      initialPinchDistance = currDistance;
+    }
+  });
+
+  renderer.domElement.addEventListener('touchend', e => {
+    if (e.touches.length === 0) {
+      dragging = false;
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
   });
 </script>
 </body>
