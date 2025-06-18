@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Cube with Drawing Gestures</title>
+  <title>AR Cube with Gesture & animate()</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>body { margin:0; overflow:hidden; }</style>
   <script type="importmap">
@@ -22,11 +22,17 @@ import { ARButton } from 'three/examples/jsm/webxr/ARButton.js';
 let scene, camera, renderer, controller;
 let cube = null, cubePlaced = false;
 let selectedObject = null;
-let isDragging = false, dragPlane = new THREE.Plane(), dragOffset = new THREE.Vector3(), dragIntersection = new THREE.Vector3();
-let initialDist = 0, initialScale = 1, rotationStartAngle = 0, initialRotY = 0;
+
+let isDragging = false;
+const dragPlane = new THREE.Plane();
+const dragOffset = new THREE.Vector3();
+const dragIntersection = new THREE.Vector3();
+
+let initialDist = 0, initialScale = 1;
+let rotationStartAngle = 0, initialRotY = 0;
 const raycaster = new THREE.Raycaster();
 
-// Init AR scene
+// Setup scene
 scene = new THREE.Scene();
 camera = new THREE.PerspectiveCamera();
 renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -35,48 +41,49 @@ renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
 document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures:['hit-test'] }));
 
-// Lighting
 scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1));
 
-// Controller to tap-place cube
+// Place cube on select
 controller = renderer.xr.getController(0);
 controller.addEventListener('select', () => {
   if (cubePlaced) return;
+
   const size = 0.1;
-  const geo = new THREE.BoxGeometry(size, size, size);
-  const mat = new THREE.MeshStandardMaterial({ color:0x00ff00 });
-  cube = new THREE.Mesh(geo, mat);
+  const geometry = new THREE.BoxGeometry(size, size, size);
+  const material = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+  cube = new THREE.Mesh(geometry, material);
   scene.add(cube);
 
-  // Position cube 1.5m in front
+  // Place cube 1.5 meters in front
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   cube.position.copy(camera.position).add(dir.multiplyScalar(1.5));
+
   cubePlaced = true;
   selectedObject = cube;
 });
 scene.add(controller);
 
-// Interaction: touch gestures
+// Touch gestures
 window.addEventListener('touchstart', e => {
   if (!cubePlaced) return;
-  const touch = e.touches[0];
 
   if (e.touches.length === 1) {
     isDragging = true;
+    const touch = e.touches[0];
     const ndc = new THREE.Vector2(
-      (touch.clientX/window.innerWidth)*2 -1,
-      -(touch.clientY/window.innerHeight)*2 +1
+      (touch.clientX / window.innerWidth) * 2 - 1,
+      -(touch.clientY / window.innerHeight) * 2 + 1
     );
     raycaster.setFromCamera(ndc, camera);
     dragPlane.setFromNormalAndCoplanarPoint(
       camera.getWorldDirection(new THREE.Vector3()).normalize(),
       cube.position
     );
-    raycaster.ray.intersectPlane(dragPlane, dragIntersection);
-    dragOffset.copy(dragIntersection).sub(cube.position);
-  }
-  else if (e.touches.length === 2) {
+    if (raycaster.ray.intersectPlane(dragPlane, dragIntersection)) {
+      dragOffset.copy(dragIntersection).sub(cube.position);
+    }
+  } else if (e.touches.length === 2) {
     const dx = e.touches[0].clientX - e.touches[1].clientX;
     const dy = e.touches[0].clientY - e.touches[1].clientY;
     initialDist = Math.hypot(dx, dy);
@@ -88,17 +95,18 @@ window.addEventListener('touchstart', e => {
 
 window.addEventListener('touchmove', e => {
   if (!cubePlaced) return;
+
   if (e.touches.length === 1 && isDragging) {
     const touch = e.touches[0];
     const ndc = new THREE.Vector2(
-      (touch.clientX/window.innerWidth)*2 -1,
-      -(touch.clientY/window.innerHeight)*2 +1
+      (touch.clientX / window.innerWidth) * 2 - 1,
+      -(touch.clientY / window.innerHeight) * 2 + 1
     );
     raycaster.setFromCamera(ndc, camera);
-    raycaster.ray.intersectPlane(dragPlane, dragIntersection);
-    cube.position.copy(dragIntersection.sub(dragOffset));
-  }
-  else if (e.touches.length === 2) {
+    if (raycaster.ray.intersectPlane(dragPlane, dragIntersection)) {
+      cube.position.copy(dragIntersection.sub(dragOffset));
+    }
+  } else if (e.touches.length === 2) {
     const dx = e.touches[0].clientX - e.touches[1].clientX;
     const dy = e.touches[0].clientY - e.touches[1].clientY;
     const newDist = Math.hypot(dx, dy);
@@ -107,23 +115,26 @@ window.addEventListener('touchmove', e => {
     const angle = Math.atan2(dy, dx);
     cube.rotation.y = initialRotY + (angle - rotationStartAngle);
   }
-}, { passive:false });
+}, { passive: false });
 
-window.addEventListener('touchend', e => {
+window.addEventListener('touchend', () => {
   isDragging = false;
 });
 
-// Render loop
-renderer.setAnimationLoop(() => {
-  renderer.render(scene, camera);
-});
-
-// Resize
+// Handle resize
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
-  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
 });
+
+// Named animate function
+function animate(timestamp, frame) {
+  renderer.render(scene, camera);
+}
+
+// WebXR-compatible render loop
+renderer.setAnimationLoop(animate);
 </script>
 </body>
 </html>
