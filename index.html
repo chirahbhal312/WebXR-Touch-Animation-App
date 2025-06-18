@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR Viewer with Reticle</title>
+  <title>AR Viewer with Reticle + Gestures</title>
   <script type="importmap">
     {
       "imports": {
@@ -19,9 +19,9 @@
     #modelInput { position: absolute; top: 10px; left: 10px; z-index: 10; }
     #infoPanel {
       position: absolute; top: 0; right: 0;
-      width: 300px; height: 100%;
-      overflow-y: auto; background: #111; color: #eee;
-      padding: 15px; box-sizing: border-box; font-size: 14px;
+      width: 300px; height: 100%; overflow-y: auto;
+      background: #111; color: #eee; padding: 15px;
+      box-sizing: border-box; font-size: 14px;
     }
     #meshButtons button {
       display: block; width: 100%; margin-bottom: 5px;
@@ -52,7 +52,7 @@
     import { ARButton } from 'three/examples/jsm/webxr/ARButton';
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.01, 100);
     camera.position.set(2, 2, 4);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -60,9 +60,7 @@
     renderer.xr.enabled = true;
     document.body.appendChild(renderer.domElement);
 
-    document.body.appendChild(
-      ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] })
-    );
+    document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
 
     const controls = new OrbitControls(camera, renderer.domElement);
     renderer.xr.addEventListener('sessionstart', () => controls.enabled = false);
@@ -86,7 +84,7 @@
     let meshList = [], audioList = [], animationList = [];
 
     let reticle = new THREE.Mesh(
-      new THREE.RingGeometry(0.05, 0.08, 32).rotateX(-Math.PI / 2),
+      new THREE.RingGeometry(0.05, 0.08, 32).rotateX(-Math.PI/2),
       new THREE.MeshBasicMaterial({ color: 0x00ff00 })
     );
     reticle.matrixAutoUpdate = false;
@@ -98,14 +96,24 @@
     let placedModel = null;
     let modelPlaced = false;
 
-    function processModel(model, animations = []) {
+    // Gesture helpers
+    let isDragging = false, previousTouches = [], dragOffset = new THREE.Vector3(), initialScale = 1;
+    function getTouchPoint(e) {
+      const x = (e.clientX/window.innerWidth)*2 -1;
+      const y = -(e.clientY/window.innerHeight)*2 +1;
+      return new THREE.Vector2(x, y);
+    }
+    function screenToWorld(sp, cam, depth=0.5) {
+      const vec = new THREE.Vector3(sp.x, sp.y, 0.5).unproject(cam);
+      const dir = vec.sub(cam.position).normalize();
+      return cam.position.clone().add(dir.multiplyScalar(depth));
+    }
+
+    function processModel(model, animations=[]) {
       if (placedModel) scene.remove(placedModel);
       placedModel = model;
 
-      meshList = [];
-      audioList = [];
-      animationList = animations;
-
+      meshList = []; audioList = []; animationList = animations;
       model.traverse(child => {
         if (child.isMesh) meshList.push(child);
         if (child.type === 'Audio') audioList.push(child);
@@ -114,20 +122,17 @@
       const box = new THREE.Box3().setFromObject(model);
       const center = box.getCenter(new THREE.Vector3());
       model.position.sub(center);
-
-      const sizeVec = box.getSize(new THREE.Vector3());
-      const maxDim = Math.max(sizeVec.x, sizeVec.y, sizeVec.z);
-      const maxUnits = 0.6;
-      const scale = maxUnits / maxDim;
-      model.scale.setScalar(scale < 1 ? scale : 1);
-
+      const size = box.getSize(new THREE.Vector3());
+      const scale = Math.min(1, 0.6/Math.max(size.x, size.y, size.z));
+      model.scale.setScalar(scale);
       model.position.y = 0;
-      mixer = animations.length > 0 ? new THREE.AnimationMixer(model) : null;
+
+      mixer = animations.length ? new THREE.AnimationMixer(model) : null;
 
       meshButtons.innerHTML = '';
       animations.forEach((clip, i) => {
         const btn = document.createElement('button');
-        btn.textContent = clip.name || `Animation ${i + 1}`;
+        btn.textContent = clip.name || `Animation ${i+1}`;
         btn.onclick = () => {
           mixer.stopAllAction();
           mixer.clipAction(clip).reset().play();
@@ -135,35 +140,32 @@
         meshButtons.appendChild(btn);
       });
 
-      animationsPanel.textContent = JSON.stringify(animations.map(a => a.name), null, 2);
-      audiosPanel.textContent = JSON.stringify(audioList.map((_, i) => `Audio ${i}`), null, 2);
+      animationsPanel.textContent = JSON.stringify(animations.map(a=>a.name),null,2);
+      audiosPanel.textContent = JSON.stringify(audioList.map((_,i)=>`Audio ${i}`),null,2);
       selectedMeshPanel.textContent = 'None';
     }
 
-    input.onchange = e => {
-      const file = e.target.files[0];
-      if (!file) return;
+    input.addEventListener('change', e => {
+      const file = e.target.files[0]; if (!file) return;
       const reader = new FileReader();
       reader.onload = evt => {
-        const buffer = evt.target.result;
+        const buf = evt.target.result;
         if (file.name.toLowerCase().endsWith('.fbx')) {
-          const model = fbxLoader.parse(buffer, '');
+          const model = fbxLoader.parse(buf, '');
           processModel(model, []);
         } else {
-          gltfLoader.parse(buffer, '', gltf => {
-            processModel(gltf.scene, gltf.animations);
-          });
+          gltfLoader.parse(buf, '', gltf => processModel(gltf.scene, gltf.animations));
         }
       };
       reader.readAsArrayBuffer(file);
-    };
+    });
 
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
 
     window.addEventListener('click', event => {
-      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      mouse.x = (event.clientX/window.innerWidth)*2 -1;
+      mouse.y = -(event.clientY/window.innerHeight)*2 +1;
       raycaster.setFromCamera(mouse, camera);
       handleRaycast(raycaster);
     });
@@ -173,7 +175,6 @@
       if (reticle.visible && placedModel && !modelPlaced) {
         placedModel.position.setFromMatrixPosition(reticle.matrix);
         scene.add(placedModel);
-
         reticle.visible = false;
         hitTestSourceRequested = true;
         hitTestSource = null;
@@ -186,61 +187,93 @@
     });
     scene.add(controller);
 
-    function handleRaycast(raycaster) {
-      const intersects = raycaster.intersectObjects(meshList, true);
-      if (intersects.length > 0) {
+    function handleRaycast(ray) {
+      const intersects = ray.intersectObjects(meshList, true);
+      if (intersects.length) {
         const mesh = intersects[0].object;
         selectedMeshPanel.textContent = mesh.name || 'Unnamed Mesh';
-
         const idx = meshList.indexOf(mesh);
-        if (idx !== -1 && audioList[idx]) {
-          audioList[idx].setVolume(1.0);
-          audioList[idx].play();
-        }
-
+        if (audioList[idx]) { audioList[idx].setVolume(1); audioList[idx].play(); }
         if (mixer && mesh.name) {
           const clip = animationList.find(c => c.name === mesh.name);
-          if (clip) {
-            mixer.stopAllAction();
-            mixer.clipAction(clip).reset().play();
-          }
+          if (clip) { mixer.stopAllAction(); mixer.clipAction(clip).reset().play(); }
         }
       }
     }
 
+    renderer.domElement.addEventListener('pointerdown', e => {
+      if (!modelPlaced || !placedModel) return;
+      renderer.domElement.setPointerCapture(e.pointerId);
+      isDragging = true;
+      previousTouches = [e];
+      initialScale = placedModel.scale.x;
+    });
+
+    renderer.domElement.addEventListener('pointermove', e => {
+      if (!isDragging || !placedModel) return;
+      const dom = renderer.domElement;
+      const idx = previousTouches.findIndex(t=>t.pointerId===e.pointerId);
+      if (idx === -1) previousTouches.push(e); else previousTouches[idx] = e;
+
+      if (previousTouches.length === 1) {
+        const pt = getTouchPoint(previousTouches[0]);
+        const depth = camera.position.distanceTo(placedModel.position);
+        const world = screenToWorld(pt, camera, depth);
+        placedModel.position.copy(world).add(dragOffset);
+      } else if (previousTouches.length === 2) {
+        const [a, b] = previousTouches;
+        const dist = Math.hypot(b.clientX-a.clientX, b.clientY-a.clientY);
+        if (!dom._lastPinchDist) dom._lastPinchDist = dist;
+        const scaleFactor = dist/dom._lastPinchDist;
+        placedModel.scale.setScalar(initialScale*scaleFactor);
+      }
+    });
+
+    renderer.domElement.addEventListener('pointerup', e => {
+      const dom = renderer.domElement;
+      dom.releasePointerCapture(e.pointerId);
+      if (!isDragging) return;
+
+      if (previousTouches.length === 1) {
+        const pt = getTouchPoint(previousTouches[0]);
+        const depth = camera.position.distanceTo(placedModel.position);
+        const world = screenToWorld(pt, camera, depth);
+        dragOffset = placedModel.position.clone().sub(world);
+      }
+
+      previousTouches = previousTouches.filter(t => t.pointerId !== e.pointerId);
+      if (previousTouches.length === 0) {
+        isDragging = false;
+        dom._lastPinchDist = null;
+      }
+    });
+
     renderer.setAnimationLoop((time, frame) => {
       if (mixer) mixer.update(clock.getDelta());
-
       if (frame && !modelPlaced) {
-        const refSpace = renderer.xr.getReferenceSpace();
         const session = renderer.xr.getSession();
+        const refSpace = renderer.xr.getReferenceSpace();
 
         if (!hitTestSourceRequested) {
           session.requestReferenceSpace('viewer').then(viewerRef => {
-            session.requestHitTestSource({ space: viewerRef }).then(source => {
-              hitTestSource = source;
-            });
+            session.requestHitTestSource({ space: viewerRef }).then(src => hitTestSource = src);
           });
-
           session.addEventListener('end', () => {
             hitTestSourceRequested = false;
             hitTestSource = null;
             modelPlaced = false;
           });
-
           hitTestSourceRequested = true;
         }
 
         if (hitTestSource) {
-          const hitTestResults = frame.getHitTestResults(hitTestSource);
-          if (hitTestResults.length > 0) {
-            const hit = hitTestResults[0];
+          const results = frame.getHitTestResults(hitTestSource);
+          if (results.length) {
+            const hit = results[0];
             const pose = hit.getPose(refSpace);
             reticle.visible = true;
             reticle.matrix.fromArray(pose.transform.matrix);
-          } else {
-            reticle.visible = false;
-          }
+          } else reticle.visible = false;
         }
       }
 
@@ -248,7 +281,7 @@
     });
 
     window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.aspect = window.innerWidth/window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
