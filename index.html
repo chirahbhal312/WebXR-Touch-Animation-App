@@ -1,180 +1,254 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"/>
-  <title>AR Viewer – Model + Gestures + Animations</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>body { margin:0; overflow:hidden; }</style>
+  <meta charset="UTF-8" />
+  <title>AR Viewer with Reticle</title>
   <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
-      "three/examples/jsm/loaders/GLTFLoader": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/loaders/GLTFLoader.js",
-      "three/examples/jsm/controls/OrbitControls": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js",
-      "three/examples/jsm/webxr/ARButton": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/webxr/ARButton.js"
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+        "three/examples/jsm/loaders/GLTFLoader": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/loaders/GLTFLoader.js",
+        "three/examples/jsm/loaders/FBXLoader": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/loaders/FBXLoader.js",
+        "three/examples/jsm/controls/OrbitControls": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js",
+        "three/examples/jsm/webxr/ARButton": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/webxr/ARButton.js"
+      }
     }
-  }
   </script>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: sans-serif; }
+    #modelInput { position: absolute; top: 10px; left: 10px; z-index: 10; }
+    #infoPanel {
+      position: absolute; top: 0; right: 0;
+      width: 300px; height: 100%;
+      overflow-y: auto; background: #111; color: #eee;
+      padding: 15px; box-sizing: border-box; font-size: 14px;
+    }
+    #meshButtons button {
+      display: block; width: 100%; margin-bottom: 5px;
+      background: #333; color: #fff; border: none; padding: 5px;
+      cursor: pointer;
+    }
+    #meshButtons button:hover { background: #555; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+  </style>
 </head>
 <body>
-<input type="file" id="modelInput" accept=".glb,.gltf"/>
-<script type="module">
-import * as THREE        from 'three';
-import { GLTFLoader }    from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { ARButton }      from 'three/examples/jsm/webxr/ARButton.js';
+  <input type="file" id="modelInput" accept=".glb,.gltf,.fbx" />
+  <div id="infoPanel">
+    <h3>Animations</h3>
+    <div id="meshButtons">Load a model to see animations...</div>
+    <h3>All Animation Names</h3>
+    <pre id="animations"></pre>
+    <h3>Audios</h3>
+    <pre id="audios"></pre>
+    <h3>Selected Mesh</h3>
+    <div id="selectedMesh">None</div>
+  </div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+    import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
+    import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+    import { ARButton } from 'three/examples/jsm/webxr/ARButton';
 
-let scene, camera, renderer, controller;
-let model = null, mixer = null;
-let hitTestSource = null, hitTestRequested = false;
-let modelPlaced = false;
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
+    camera.position.set(2, 2, 4);
 
-let isDragging = false;
-const raycaster = new THREE.Raycaster();
-const dragPlane = new THREE.Plane();
-const dragOffset = new THREE.Vector3(), dragIntersect = new THREE.Vector3();
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
 
-let initialDist = 0, initialScale = 1;
-let rotationStart = 0, initialRotY = 0;
-
-// Scene setup
-scene = new THREE.Scene();
-camera = new THREE.PerspectiveCamera();
-renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.xr.enabled = true;
-document.body.appendChild(renderer.domElement);
-document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
-scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1));
-
-// Reticle for placement
-const reticle = new THREE.Mesh(
-  new THREE.RingGeometry(0.06, 0.09, 32).rotateX(-Math.PI/2),
-  new THREE.MeshBasicMaterial({ color: 0x00FF00 })
-);
-reticle.matrixAutoUpdate = false;
-reticle.visible = false;
-scene.add(reticle);
-
-// Load user model
-const loader = new GLTFLoader();
-document.getElementById('modelInput').addEventListener('change', e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = evt => {
-    loader.parse(evt.target.result, '', gltf => {
-      if (model) scene.remove(model);
-      model = gltf.scene;
-      mixer = new THREE.AnimationMixer(model);
-      gltf.animations.forEach(clip => mixer.clipAction(clip).play());
-      model.traverse(c => c.castShadow = true);
-      scene.add(model);
-      modelPlaced = true;
-    });
-  };
-  reader.readAsArrayBuffer(file);
-});
-
-// Controller for taps & hit testing
-controller = renderer.xr.getController(0);
-controller.addEventListener('select', () => {
-  if (reticle.visible && model && !modelPlaced) {
-    model.position.setFromMatrixPosition(reticle.matrix);
-    model.quaternion.setFromRotationMatrix(reticle.matrix);
-    scene.add(model);
-    modelPlaced = true;
-  }
-});
-scene.add(controller);
-
-// Gesture handlers
-window.addEventListener('touchstart', e => {
-  if (!modelPlaced) return;
-  if (e.touches.length === 1) {
-    isDragging = true;
-    const touch = e.touches[0];
-    const ndc = new THREE.Vector2(
-      touch.clientX / window.innerWidth * 2 - 1,
-      -touch.clientY / window.innerHeight * 2 + 1
+    document.body.appendChild(
+      ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] })
     );
-    raycaster.setFromCamera(ndc, camera);
-    dragPlane.setFromNormalAndCoplanarPoint(
-      camera.getWorldDirection(new THREE.Vector3()).normalize(),
-      model.position
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    renderer.xr.addEventListener('sessionstart', () => controls.enabled = false);
+    renderer.xr.addEventListener('sessionend', () => controls.enabled = true);
+
+    const listener = new THREE.AudioListener();
+    camera.add(listener);
+    scene.add(new THREE.AmbientLight(0xffffff, 1));
+
+    const gltfLoader = new GLTFLoader();
+    const fbxLoader = new FBXLoader();
+
+    const input = document.getElementById('modelInput');
+    const meshButtons = document.getElementById('meshButtons');
+    const animationsPanel = document.getElementById('animations');
+    const audiosPanel = document.getElementById('audios');
+    const selectedMeshPanel = document.getElementById('selectedMesh');
+
+    let mixer = null;
+    const clock = new THREE.Clock();
+    let meshList = [], audioList = [], animationList = [];
+
+    let reticle = new THREE.Mesh(
+      new THREE.RingGeometry(0.05, 0.08, 32).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0x00ff00 })
     );
-    if (raycaster.ray.intersectPlane(dragPlane, dragIntersect)) {
-      dragOffset.copy(dragIntersect).sub(model.position);
-    }
-  } else if (e.touches.length === 2) {
-    const [a, b] = e.touches;
-    initialDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-    initialScale = model.scale.x;
-    rotationStart = Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX);
-    initialRotY = model.rotation.y;
-  }
-});
+    reticle.matrixAutoUpdate = false;
+    reticle.visible = false;
+    scene.add(reticle);
 
-window.addEventListener('touchmove', e => {
-  if (!modelPlaced) return;
-  e.preventDefault();
-  if (e.touches.length === 1 && isDragging) {
-    const t = e.touches[0];
-    const ndc = new THREE.Vector2(
-      t.clientX / window.innerWidth * 2 - 1,
-      -t.clientY / window.innerHeight * 2 + 1
-    );
-    raycaster.setFromCamera(ndc, camera);
-    if (raycaster.ray.intersectPlane(dragPlane, dragIntersect)) {
-      model.position.copy(dragIntersect.sub(dragOffset));
-    }
-  } else if (e.touches.length === 2) {
-    const [a, b] = e.touches;
-    const newDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-    model.scale.setScalar(initialScale * (newDist / initialDist));
-    const newAngle = Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX);
-    model.rotation.y = initialRotY + (newAngle - rotationStart);
-  }
-}, { passive: false });
+    let hitTestSource = null;
+    let hitTestSourceRequested = false;
+    let placedModel = null;
+    let modelPlaced = false;
 
-window.addEventListener('touchend', () => { isDragging = false; });
+    function processModel(model, animations = []) {
+      if (placedModel) scene.remove(placedModel);
+      placedModel = model;
 
-// Resize handler
-window.addEventListener('resize', () => {
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-});
+      meshList = [];
+      audioList = [];
+      animationList = animations;
 
-// Animate + XR loop
-function animate(timestamp, frame) {
-  if (mixer) mixer.update(renderer.xr.getSession() ? renderer.xr.getFrame().deltaTime * 0.001 : 0.016);
-
-  if (frame && !modelPlaced) {
-    const session = renderer.xr.getSession();
-    const refSpace = renderer.xr.getReferenceSpace();
-
-    if (!hitTestRequested) {
-      session.requestReferenceSpace('viewer').then(v => {
-        session.requestHitTestSource({ space: v }).then(src => hitTestSource = src);
+      model.traverse(child => {
+        if (child.isMesh) meshList.push(child);
+        if (child.type === 'Audio') audioList.push(child);
       });
-      session.addEventListener('end', () => hitTestRequested = false);
-      hitTestRequested = true;
+
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      model.position.sub(center);
+
+      const sizeVec = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(sizeVec.x, sizeVec.y, sizeVec.z);
+      const maxUnits = 0.6;
+      const scale = maxUnits / maxDim;
+      model.scale.setScalar(scale < 1 ? scale : 1);
+      model.position.y = 0;
+
+      mixer = animations.length > 0 ? new THREE.AnimationMixer(model) : null;
+
+      meshButtons.innerHTML = '';
+      animations.forEach((clip, i) => {
+        const btn = document.createElement('button');
+        btn.textContent = clip.name || `Animation ${i + 1}`;
+        btn.onclick = () => {
+          mixer.stopAllAction();
+          mixer.clipAction(clip).reset().play();
+        };
+        meshButtons.appendChild(btn);
+      });
+
+      animationsPanel.textContent = JSON.stringify(animations.map(a => a.name), null, 2);
+      audiosPanel.textContent = JSON.stringify(audioList.map((_, i) => `Audio ${i}`), null, 2);
+      selectedMeshPanel.textContent = 'None';
     }
 
-    if (hitTestSource) {
-      const hits = frame.getHitTestResults(hitTestSource);
-      if (hits.length) {
-        const pose = hits[0].getPose(refSpace);
-        reticle.matrix.fromArray(pose.transform.matrix);
-        reticle.visible = true;
-      } else reticle.visible = false;
+    input.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = evt => {
+        const buffer = evt.target.result;
+        if (file.name.toLowerCase().endsWith('.fbx')) {
+          const model = fbxLoader.parse(buffer, '');
+          processModel(model, []);
+        } else {
+          gltfLoader.parse(buffer, '', gltf => {
+            processModel(gltf.scene, gltf.animations);
+          });
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    };
+
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    window.addEventListener('click', event => {
+      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      handleRaycast(raycaster);
+    });
+
+    const controller = renderer.xr.getController(0);
+    controller.addEventListener('select', () => {
+      if (reticle.visible && placedModel && !modelPlaced) {
+        placedModel.position.setFromMatrixPosition(reticle.matrix);
+        scene.add(placedModel);
+        reticle.visible = false;
+        hitTestSourceRequested = true;
+        hitTestSource = null;
+        modelPlaced = true;
+      } else {
+        raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+        raycaster.ray.direction.set(0, 0, -1).transformDirection(controller.matrixWorld);
+        handleRaycast(raycaster);
+      }
+    });
+    scene.add(controller);
+
+    function handleRaycast(raycaster) {
+      const intersects = raycaster.intersectObjects(meshList, true);
+      if (intersects.length > 0) {
+        const mesh = intersects[0].object;
+        selectedMeshPanel.textContent = mesh.name || 'Unnamed Mesh';
+        const idx = meshList.indexOf(mesh);
+        if (idx !== -1 && audioList[idx]) {
+          audioList[idx].setVolume(1.0);
+          audioList[idx].play();
+        }
+        if (mixer && mesh.name) {
+          const clip = animationList.find(c => c.name === mesh.name);
+          if (clip) {
+            mixer.stopAllAction();
+            mixer.clipAction(clip).reset().play();
+          }
+        }
+      }
     }
-  }
 
-  renderer.render(scene, camera);
-}
+    function animate(time, frame) {
+      if (mixer) mixer.update(clock.getDelta());
 
-renderer.setAnimationLoop(animate);
-</script>
+      if (frame && !modelPlaced) {
+        const refSpace = renderer.xr.getReferenceSpace();
+        const session = renderer.xr.getSession();
+
+        if (!hitTestSourceRequested) {
+          session.requestReferenceSpace('viewer').then(viewerRef => {
+            session.requestHitTestSource({ space: viewerRef }).then(source => {
+              hitTestSource = source;
+            });
+          });
+          session.addEventListener('end', () => {
+            hitTestSourceRequested = false;
+            hitTestSource = null;
+            modelPlaced = false;
+          });
+          hitTestSourceRequested = true;
+        }
+
+        if (hitTestSource) {
+          const hits = frame.getHitTestResults(hitTestSource);
+          if (hits.length > 0) {
+            const hit = hits[0];
+            const pose = hit.getPose(refSpace);
+            reticle.visible = true;
+            reticle.matrix.fromArray(pose.transform.matrix);
+          } else {
+            reticle.visible = false;
+          }
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    renderer.setAnimationLoop(animate);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
 </body>
 </html>
