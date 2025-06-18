@@ -65,7 +65,6 @@
     );
 
     const controls = new OrbitControls(camera, renderer.domElement);
-
     renderer.xr.addEventListener('sessionstart', () => controls.enabled = false);
     renderer.xr.addEventListener('sessionend', () => controls.enabled = true);
 
@@ -97,6 +96,7 @@
     let hitTestSource = null;
     let hitTestSourceRequested = false;
     let placedModel = null;
+    let modelPlaced = false;
 
     function processModel(model, animations = []) {
       if (placedModel) scene.remove(placedModel);
@@ -122,7 +122,6 @@
       model.scale.setScalar(scale < 1 ? scale : 1);
 
       model.position.y = 0;
-
       mixer = animations.length > 0 ? new THREE.AnimationMixer(model) : null;
 
       meshButtons.innerHTML = '';
@@ -171,9 +170,14 @@
 
     const controller = renderer.xr.getController(0);
     controller.addEventListener('select', () => {
-      if (reticle.visible && placedModel) {
+      if (reticle.visible && placedModel && !modelPlaced) {
         placedModel.position.setFromMatrixPosition(reticle.matrix);
         scene.add(placedModel);
+
+        reticle.visible = false;
+        hitTestSourceRequested = true;
+        hitTestSource = null;
+        modelPlaced = true;
       } else {
         raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
         raycaster.ray.direction.set(0, 0, -1).transformDirection(controller.matrixWorld);
@@ -207,7 +211,7 @@
     renderer.setAnimationLoop((time, frame) => {
       if (mixer) mixer.update(clock.getDelta());
 
-      if (frame) {
+      if (frame && !modelPlaced) {
         const refSpace = renderer.xr.getReferenceSpace();
         const session = renderer.xr.getSession();
 
@@ -221,6 +225,7 @@
           session.addEventListener('end', () => {
             hitTestSourceRequested = false;
             hitTestSource = null;
+            modelPlaced = false;
           });
 
           hitTestSourceRequested = true;
