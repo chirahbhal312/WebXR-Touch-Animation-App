@@ -64,10 +64,10 @@
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.xr.enabled = true; // Enable WebXR
+    renderer.xr.enabled = true;
     document.body.appendChild(renderer.domElement);
 
-    document.body.appendChild(ARButton.createButton(renderer)); // AR Button
+    document.body.appendChild(ARButton.createButton(renderer));
 
     const controls = new OrbitControls(camera, renderer.domElement);
 
@@ -159,6 +159,24 @@
       mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
       raycaster.setFromCamera(mouse, camera);
+      handleRaycast(raycaster);
+    });
+
+    // 🔥 AR Controller Raycasting
+    const controller = renderer.xr.getController(0);
+    scene.add(controller);
+
+    controller.addEventListener('select', () => {
+      const tempMatrix = new THREE.Matrix4();
+      tempMatrix.identity().extractRotation(controller.matrixWorld);
+
+      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+      handleRaycast(raycaster);
+    });
+
+    function handleRaycast(raycaster) {
       const intersects = raycaster.intersectObjects(meshList, true);
       if (intersects.length > 0) {
         const mesh = intersects[0].object;
@@ -178,7 +196,7 @@
           }
         }
       }
-    });
+    }
 
     function animate() {
       renderer.setAnimationLoop(() => {
